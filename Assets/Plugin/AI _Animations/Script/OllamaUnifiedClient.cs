@@ -14,14 +14,17 @@ public class OllamaUnifiedClient : MonoBehaviour
     [Header("UI")]
     public TMP_InputField inputField;
     public TMP_Text outputText;
+    public GameObject loadingPanel;
 
     [Header("WebSocket")]
     public string websocketUrl = "ws://localhost:8765";
     public float responseTimeout = 30f;
 
+    // --- PERUBAHAN DI SINI ---
     [Header("Komponen")]
-    public LMNTAudioPlayer audioPlayer;
+    public OfflineTTSPlayer audioPlayer; // Mengganti LMNTAudioPlayer dengan OfflineTTSPlayer
     public Animator animationController;
+    // --- AKHIR PERUBAHAN ---
 
     private WebSocket websocket;
     private StringBuilder sentenceBuilder = new StringBuilder();
@@ -33,10 +36,20 @@ public class OllamaUnifiedClient : MonoBehaviour
 
     void Start()
     {
+        // Nonaktifkan input dan tampilkan panel loading saat mulai
+        inputField.interactable = false;
+        loadingPanel.SetActive(true);
+
+        // Dengarkan event dari ServerManager
+        ServerManager.OnAllServersReady += HandleServersReady;
+
         if (animationController == null)
             animationController = GetComponent<Animator>() ?? FindAnyObjectByType<Animator>();
+
+        // --- PERUBAHAN DI SINI ---
         if (audioPlayer == null)
-            audioPlayer = GetComponent<LMNTAudioPlayer>() ?? FindAnyObjectByType<LMNTAudioPlayer>();
+            audioPlayer = GetComponent<OfflineTTSPlayer>() ?? FindAnyObjectByType<OfflineTTSPlayer>();
+        // --- AKHIR PERUBAHAN ---
 
         if (audioPlayer != null)
         {
@@ -44,6 +57,19 @@ public class OllamaUnifiedClient : MonoBehaviour
             audioPlayer.OnAudioPlaybackComplete += HandleAudioPlaybackComplete;
         }
 
+        ConnectWebSocket();
+    }
+
+    private void HandleServersReady()
+    {
+        // Fungsi ini akan dipanggil ketika semua server sudah siap
+        UnityEngine.Debug.Log("OllamaUnifiedClient menerima sinyal server siap. Mengaktifkan UI.");
+
+        // Aktifkan input dan sembunyikan panel loading
+        inputField.interactable = true;
+        loadingPanel.SetActive(false);
+
+        // Sekarang baru kita hubungkan WebSocket
         ConnectWebSocket();
     }
 
@@ -83,11 +109,12 @@ public class OllamaUnifiedClient : MonoBehaviour
         animationController?.SetBool("isThinking", true);
         isAwaitingResponse = true;
 
-        // Logika custom response bisa ditaruh di sini
         if (userInput.ToLower().Contains("siapa") && userInput.ToLower().Contains("kamu"))
         {
-            string customResponse = "Halo! Saya adalah virtual assistant yang dapat berjalan secara offline yang dibuat oleh prodi Informatika UMM untuk membantu menjawab pertanyaan Anda. Apa yang bisa saya bantu?";
+            string customResponse = "Halo! Saya adalah asisten virtual yang berjalan secara offline, dibuat oleh prodi Informatika UMM. Ada yang bisa saya bantu?";
             ProcessSingleSentence(customResponse);
+            // Karena TTS sekarang offline, kita bisa langsung kembali idle setelah memproses.
+            // Logika transisi state kini sepenuhnya dikontrol oleh event audio.
             isAwaitingResponse = false;
             return;
         }
@@ -175,8 +202,14 @@ public class OllamaUnifiedClient : MonoBehaviour
     {
         while (sentenceQueueForAudio.Count > 0)
         {
-            string sentence = sentenceQueueForAudio.Dequeue();
-            audioPlayer.PlayText(sentence);
+            // Cek apakah audio player sedang sibuk
+            // Ini mencegah pemanggilan PlayText berkali-kali jika coroutine sebelumnya masih berjalan
+            if (audioPlayer != null)
+            {
+                string sentence = sentenceQueueForAudio.Dequeue();
+                audioPlayer.PlayText(sentence);
+            }
+            // Tunggu sebentar sebelum memproses antrian berikutnya jika perlu
             yield return new WaitForSeconds(0.1f);
         }
         audioRequestCoroutine = null;
@@ -184,7 +217,6 @@ public class OllamaUnifiedClient : MonoBehaviour
 
     private void OnAudioStartHandler()
     {
-        // Transisi: Thinking -> Talking atau tetap di Talking
         animationController?.SetBool("isThinking", false);
         animationController?.SetBool("isTalking", true);
 
@@ -197,27 +229,18 @@ public class OllamaUnifiedClient : MonoBehaviour
 
     private void HandleAudioPlaybackComplete()
     {
-        // Fungsi ini HANYA dipanggil ketika antrian audio di LMNTAudioPlayer habis.
         Debug.Log("Rangkaian audio telah selesai diputar.");
-
-        // Langkah 1: Hentikan animasi berbicara.
         animationController?.SetBool("isTalking", false);
 
-        // Langkah 2: Tentukan state selanjutnya.
-        // Apakah kita masih menunggu kalimat baru dari server atau masih ada antrian teks?
         if (isAwaitingResponse || sentenceQueueForAudio.Count > 0)
         {
-            // Jika ya, masuk ke mode Thinking.
-            // Transisi: Talking -> Thinking
             Debug.Log("Masih menunggu data, masuk ke mode Thinking.");
             animationController?.SetBool("isThinking", true);
         }
         else
         {
-            // Jika tidak, semua proses sudah selesai. Kembali ke Idle.
-            // Transisi: Talking -> Idle
             Debug.Log("Semua proses selesai, kembali ke Idle.");
-            ReturnToIdle(); // Ini akan mengatur isThinking ke false.
+            ReturnToIdle();
         }
     }
 
@@ -238,6 +261,8 @@ public class OllamaUnifiedClient : MonoBehaviour
 
     private void OnDestroy()
     {
+        ServerManager.OnAllServersReady -= HandleServersReady;
+
         if (audioPlayer != null)
         {
             audioPlayer.OnAudioStart -= OnAudioStartHandler;
