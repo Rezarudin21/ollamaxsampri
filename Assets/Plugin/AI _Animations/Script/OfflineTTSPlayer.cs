@@ -7,6 +7,10 @@ using System.IO;
 
 public class OfflineTTSPlayer : MonoBehaviour
 {
+    [Header("Pengaturan Piper")]
+    [Tooltip("Nama file model .onnx yang akan digunakan.")]
+    public string modelName = "en_US-ryan-medium.onnx";
+
     [Header("Komponen")]
     [SerializeField] private AudioSource audioSource;
 
@@ -16,8 +20,8 @@ public class OfflineTTSPlayer : MonoBehaviour
 
     private Queue<string> textQueue = new Queue<string>();
     private bool isPlaying = false;
-
-    private string ttsExecutablePath;
+    private string piperExecutablePath;
+    private string modelPath;
     private string tempAudioFilePath;
 
     void Start()
@@ -27,49 +31,40 @@ public class OfflineTTSPlayer : MonoBehaviour
             audioSource = GetComponent<AudioSource>() ?? gameObject.AddComponent<AudioSource>();
         }
 
-        // Path ke executable di dalam StreamingAssets
-        // Ganti "TextToSpeechCLI.exe" jika nama file Anda berbeda
-        ttsExecutablePath = Path.Combine(Application.streamingAssetsPath, "TTS.exe");
-
-        // Path untuk file audio sementara
-        tempAudioFilePath = Path.Combine(Application.persistentDataPath, "tts_audio.wav");
-    }
-
-    public void PlayText(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return;
-
-        textQueue.Enqueue(text);
-        if (!isPlaying)
+        string gameRootPath = Path.GetDirectoryName(Application.dataPath);
+        if (Application.isEditor)
         {
-            StartCoroutine(PlayNextInQueue());
-        }
-    }
-
-    private IEnumerator PlayNextInQueue()
-    {
-        isPlaying = true;
-
-        while (textQueue.Count > 0)
-        {
-            string text = textQueue.Dequeue();
-            OnAudioStart?.Invoke();
-
-            yield return StartCoroutine(SynthesizeAndPlay(text));
+            // Saat di editor, asumsikan folder tts-engine ada di root proyek
+            gameRootPath = Directory.GetCurrentDirectory();
         }
 
-        isPlaying = false;
-        UnityEngine.Debug.Log("Antrian audio selesai. Memanggil OnAudioPlaybackComplete.");
-        OnAudioPlaybackComplete?.Invoke();
+        piperExecutablePath = Path.Combine(gameRootPath, "tts-engine", "piper.exe");
+        modelPath = Path.Combine(gameRootPath, "tts-engine", "model", modelName);
+        tempAudioFilePath = Path.Combine(Application.persistentDataPath, "piper_output.wav");
     }
+
+    // ... (Fungsi PlayText dan PlayNextInQueue tetap sama) ...
+    public void PlayText(string text) { if (!string.IsNullOrWhiteSpace(text)) { textQueue.Enqueue(text); if (!isPlaying) { StartCoroutine(PlayNextInQueue()); } } }
+    private IEnumerator PlayNextInQueue() { isPlaying = true; while (textQueue.Count > 0) { string text = textQueue.Dequeue(); OnAudioStart?.Invoke(); yield return StartCoroutine(SynthesizeAndPlay(text)); } isPlaying = false; UnityEngine.Debug.Log("Antrian audio selesai."); OnAudioPlaybackComplete?.Invoke(); }
+
 
     private IEnumerator SynthesizeAndPlay(string text)
     {
+        // Hapus file audio lama jika ada untuk menghindari error
+        if (File.Exists(tempAudioFilePath))
+        {
+            File.Delete(tempAudioFilePath);
+        }
+
+        string arguments = $"--model \"{modelPath}\" --output_file \"{tempAudioFilePath}\"";
+
         Process process = new Process();
-        process.StartInfo.FileName = ttsExecutablePath;
-        process.StartInfo.Arguments = $"\"{tempAudioFilePath}\" \"{text}\"";
+        process.StartInfo.FileName = "cmd.exe"; // Jalankan via cmd untuk menangani echo
+        process.StartInfo.Arguments = $"/C echo \"{text}\" | \"{piperExecutablePath}\" {arguments}";
         process.StartInfo.UseShellExecute = false;
         process.StartInfo.CreateNoWindow = true;
+
+        UnityEngine.Debug.Log($"Menjalankan Piper: {process.StartInfo.Arguments}");
 
         try
         {
@@ -77,16 +72,21 @@ public class OfflineTTSPlayer : MonoBehaviour
         }
         catch (System.Exception e)
         {
-            UnityEngine.Debug.LogError($"Gagal menjalankan proses TTS: {e.Message}");
+            UnityEngine.Debug.LogError($"Gagal menjalankan proses Piper: {e.Message}\nPastikan path sudah benar: {piperExecutablePath}");
             yield break;
         }
 
         yield return new WaitUntil(() => process.HasExited);
 
+        if (!File.Exists(tempAudioFilePath))
+        {
+            UnityEngine.Debug.LogError("Piper selesai, tetapi file output .wav tidak ditemukan!");
+            yield break;
+        }
+
         using (UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip("file://" + tempAudioFilePath, AudioType.WAV))
         {
             yield return www.SendWebRequest();
-
             if (www.result == UnityWebRequest.Result.Success)
             {
                 AudioClip clip = DownloadHandlerAudioClip.GetContent(www);
@@ -96,7 +96,7 @@ public class OfflineTTSPlayer : MonoBehaviour
             }
             else
             {
-                UnityEngine.Debug.LogError("Gagal memuat audio TTS: " + www.error);
+                UnityEngine.Debug.LogError("Gagal memuat audio dari Piper: " + www.error);
             }
         }
     }

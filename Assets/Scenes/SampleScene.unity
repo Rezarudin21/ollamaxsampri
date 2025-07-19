@@ -912,6 +912,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 11eb3c0aa6d87604387f2e25b66376cf, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  modelName: en_US-ryan-medium.onnx
   audioSource: {fileID: 779566954}
 --- !u!1 &832575517
 GameObject:
